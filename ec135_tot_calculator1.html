@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>EC135 PW206B2 Inflight Power Check (Web)</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/modern-normalize/1.1.0/modern-normalize.min.css">
+<style>
+  body { font-family: Arial, sans-serif; max-width: 900px; margin: 24px auto; padding: 0 16px; }
+  h1 { text-align: center; }
+  label { display:block; margin-top:8px; }
+  input[type="number"], input[type="text"] { width:140px; padding:6px; margin-right:8px; }
+  .row { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:8px; }
+  #calculate { margin-top:12px; padding:8px 14px; }
+  #results { margin-top:16px; background:#f8f8f8; padding:12px; border-radius:6px; }
+  #plot { margin-top:18px; }
+  .note { font-size:0.9em; color:#444; margin-top:6px; }
+</style>
+</head>
+<body>
+  <h1>EC135 PW206B2 Inflight Power Check</h1>
+  <p class="note">This replicates the MATLAB calculator. Measured TOT entry will be adjusted by <strong>-25</strong> (as in original script).</p>
+
+  <div>
+    <label>Pressure Altitude (ft):
+      <input id="pa" type="number" value="0" step="1" />
+    </label>
+    <label>Outside Air Temperature (°C):
+      <input id="oat" type="number" value="15" step="0.1" />
+    </label>
+    <label>Measured TOT from engine (°C) (will be adjusted by -25):
+      <input id="meas" type="number" value="700" step="0.1" />
+    </label>
+    <label>Plot chart? (y/n):
+      <input id="doplot" type="text" value="y" maxlength="1" style="width:40px"/>
+    </label>
+
+    <div class="row">
+      <button id="calculate">Calculate</button>
+      <button id="downloadPdf" style="display:none">Download PDF Report</button>
+      <button id="reset">Reset</button>
+    </div>
+  </div>
+
+  <div id="results" style="display:none">
+    <div id="expectedLine"></div>
+    <div id="measuredLine"></div>
+    <div id="deltaLine"></div>
+  </div>
+
+  <div id="plot" style="display:none">
+    <div id="chart" style="width:100%;height:520px;"></div>
+  </div>
+
+<script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script>
+(() => {
+  // Fixed bias-corrected coefficients (as requested)
+  const A0 = 660;              // Intercept at PA=0 ft
+  const B0 = 2.50;             // OAT slope at PA=0 ft
+  const c_intercept = 0.00775; // Intercept increase per ft
+  const c_slope = 0.000075;    // Slope increase per ft
+
+  const MCP_LIMIT = 835; // MCP line
+
+  const el = id => document.getElementById(id);
+
+  function tot_fn(pa, oat) {
+    // returns TOT for given pa and oat
+    return A0 + c_intercept * pa + (B0 + c_slope * pa) * oat;
+  }
+
+  function calculateAndShow() {
+    const PA = parseFloat(el('pa').value) || 0;
+    const OAT = parseFloat(el('oat').value) || 0;
+    const measuredInput = parseFloat(el('meas').value) || 0;
+    const doplot = (el('doplot').value || 'n').trim().toLowerCase() === 'y';
+
+    // replicate MATLAB handling: measured TOT = input - 25
+    const TOT_measured = measuredInput - 25;
+
+    const TOT_expected = tot_fn(PA, OAT);
+    const delta = TOT_expected - TOT_measured;
+
+    // show numeric results
+    el('results').style.display = 'block';
+    el('expectedLine').innerHTML = `<strong>Expected TOT:</strong> ${TOT_expected.toFixed(1)} °C`;
+    el('measuredLine').innerHTML = `<strong>Measured TOT (input-25):</strong> ${TOT_measured.toFixed(1)} °C`;
+    el('deltaLine').innerHTML = `<strong>ΔTOT (Expected - Measured):</strong> ${delta.toFixed(1)} °C`;
+
+    // show download button
+    el('downloadPdf').style.display = 'inline-block';
+
+    // plot if requested
+    if (doplot) {
+      el('plot').style.display = 'block';
+      drawPlot(PA, OAT, TOT_expected, TOT_measured);
+    } else {
+      el('plot').style.display = 'none';
+    }
+  }
+
+  function drawPlot(PA_input, OAT_input, TOT_expected, TOT_measured) {
+    const OAT_vec = [];
+    for (let v = 0; v <= 50; v += 1) OAT_vec.push(v);
+
+    const PA_list = [0,2000,4000,6000,8000,10000];
+
+    const traces = [];
+
+    // plot lines for each PA
+    PA_list.forEach(pa => {
+      const y = OAT_vec.map(o => tot_fn(pa, o));
+      traces.push({
+        x: OAT_vec,
+        y: y,
+        mode: 'lines',
+        name: `PA = ${pa} ft`,
+        line: {width: 2}
+      });
+    });
+
+    // expected point
+    traces.push({
+      x: [OAT_input],
+      y: [TOT_expected],
+      mode: 'markers',
+      name: 'Expected point',
+      marker: {color: 'black', size: 10, symbol: 'circle'}
+    });
+
+    // measured point
+    traces.push({
+      x: [OAT_input],
+      y: [TOT_measured],
+      mode: 'markers',
+      name: 'Measured point',
+      marker: {color: 'red', size: 12, symbol: 'x'}
+    });
+
+    // MCP line
+    traces.push({
+      x: [Math.min(...OAT_vec), Math.max(...OAT_vec)],
+      y: [MCP_LIMIT, MCP_LIMIT],
+      mode: 'lines',
+      name: 'MCP Limit (~835 °C)',
+      line: {dash: 'dash', color: 'purple', width: 2}
+    });
+
+    const layout = {
+      title: 'EC135 PW206B2 Inflight Power Check (60% Torque, Bleed OFF)',
+      xaxis: {title: 'OAT (°C)'},
+      yaxis: {title: 'TOT (°C)'},
+      showlegend: true,
+      legend: {orientation: 'v'}
+    };
+
+    Plotly.newPlot('chart', traces, layout, {responsive:true});
+
+    // annotate delta between points
+    const midY = (TOT_expected + TOT_measured)/2;
+    const annotation = {
+      x: OAT_input + 1,
+      y: midY,
+      text: `ΔTOT = ${ (TOT_expected - TOT_measured).toFixed(1) } °C`,
+      showarrow: false,
+      font: {color: 'blue', size:12}
+    };
+    Plotly.relayout('chart', {'annotations': [annotation]});
+  }
+
+  // PDF download
+  function downloadPDF() {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
+    const name = 'EC135_TOT_Report';
+    const PA = parseFloat(el('pa').value) || 0;
+    const OAT = parseFloat(el('oat').value) || 0;
+    const measuredInput = parseFloat(el('meas').value) || 0;
+    const TOT_measured = measuredInput - 25;
+    const TOT_expected = tot_fn(PA, OAT);
+    const delta = TOT_expected - TOT_measured;
+    const date = new Date().toLocaleString();
+
+    doc.setFontSize(14);
+    doc.text('EC135 PW206B2 Inflight Power Check Report', 12, 20);
+    doc.setFontSize(11);
+    doc.text(`Date: ${date}`, 12, 30);
+    doc.text(`Pressure Altitude (ft): ${PA}`, 12, 40);
+    doc.text(`OAT (°C): ${OAT}`, 12, 48);
+    doc.text(`Measured TOT (input - 25) (°C): ${TOT_measured.toFixed(1)}`, 12, 56);
+    doc.text(`Expected TOT (°C): ${TOT_expected.toFixed(1)}`, 12, 64);
+    doc.text(`ΔTOT (Expected - Measured) (°C): ${delta.toFixed(1)}`, 12, 72);
+
+    doc.save(`${name}.pdf`);
+  }
+
+  // event listeners
+  el('calculate').addEventListener('click', calculateAndShow);
+  el('downloadPdf').addEventListener('click', downloadPDF);
+  el('reset').addEventListener('click', () => {
+    el('pa').value = 0; el('oat').value = 15; el('meas').value = 700; el('doplot').value='y';
+    el('results').style.display='none'; el('plot').style.display='none'; el('downloadPdf').style.display='none';
+    Plotly.purge('chart');
+  });
+
+})();
+</script>
+</body>
+</html>
